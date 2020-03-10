@@ -1,6 +1,7 @@
 package org.jsoup.parser;
 
 import org.jsoup.helper.Validate;
+import org.jsoup.internal.StringUtil;
 import org.jsoup.nodes.Entities;
 
 import java.util.Arrays;
@@ -12,12 +13,24 @@ final class Tokeniser {
     static final char replacementChar = '\uFFFD'; // replaces null character
     private static final char[] notCharRefCharsSorted = new char[]{'\t', '\n', '\r', '\f', ' ', '<', '&'};
 
+    // Some illegal character escapes are parsed by browsers as windows-1252 instead. See issue #1034
+    // https://html.spec.whatwg.org/multipage/parsing.html#numeric-character-reference-end-state
+    static final int win1252ExtensionsStart = 0x80;
+    static final int[] win1252Extensions = new int[] {
+            // we could build this manually, but Windows-1252 is not a standard java charset so that could break on
+            // some platforms - this table is verified with a test
+            0x20AC, 0x0081, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021,
+            0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0x008D, 0x017D, 0x008F,
+            0x0090, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014,
+            0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0x009D, 0x017E, 0x0178,
+    };
+
     static {
         Arrays.sort(notCharRefCharsSorted);
     }
 
-    private CharacterReader reader; // html input
-    private ParseErrorList errors; // errors found while tokenising
+    private final CharacterReader reader; // html input
+    private final ParseErrorList errors; // errors found while tokenising
 
     private TokeniserState state = TokeniserState.Data; // current tokenisation state
     private Token emitPending; // the token we are about to emit on next read
@@ -33,7 +46,6 @@ final class Tokeniser {
     Token.Doctype doctypePending = new Token.Doctype(); // doctype building up
     Token.Comment commentPending = new Token.Comment(); // comment building up
     private String lastStartTag; // the last start tag emitted, to test appropriate end tag
-    private boolean selfClosingFlagAcknowledged = true;
 
     Tokeniser(CharacterReader reader, ParseErrorList errors) {
         this.reader = reader;
@@ -41,18 +53,15 @@ final class Tokeniser {
     }
 
     Token read() {
-        if (!selfClosingFlagAcknowledged) {
-            error("Self closing flag not acknowledged");
-            selfClosingFlagAcknowledged = true;
+        while (!isEmitPending) {
+            state.read(this, reader);
         }
 
-        while (!isEmitPending)
-            state.read(this, reader);
-
         // if emit is pending, a non-character token was found: return any chars in buffer, and leave token for next read:
-        if (charsBuilder.length() > 0) {
-            String str = charsBuilder.toString();
-            charsBuilder.delete(0, charsBuilder.length());
+        final StringBuilder cb = this.charsBuilder;
+        if (cb.length() != 0) {
+            String str = cb.toString();
+            cb.delete(0, cb.length());
             charsString = null;
             return charPending.data(str);
         } else if (charsString != null) {
@@ -66,7 +75,7 @@ final class Tokeniser {
     }
 
     void emit(Token token) {
-        Validate.isFalse(isEmitPending, "There is an unread token pending!");
+        Validate.isFalse(isEmitPending);
 
         emitPending = token;
         isEmitPending = true;
@@ -74,8 +83,6 @@ final class Tokeniser {
         if (token.type == Token.TokenType.StartTag) {
             Token.StartTag startTag = (Token.StartTag) token;
             lastStartTag = startTag.tagName;
-            if (startTag.selfClosing)
-                selfClosingFlagAcknowledged = false;
         } else if (token.type == Token.TokenType.EndTag) {
             Token.EndTag endTag = (Token.EndTag) token;
             if (endTag.attributes != null)
@@ -97,12 +104,37 @@ final class Tokeniser {
         }
     }
 
+    // variations to limit need to create temp strings
+    void emit(final StringBuilder str) {
+        if (charsString == null) {
+            charsString = str.toString();
+        }
+        else {
+            if (charsBuilder.length() == 0) {
+                charsBuilder.append(charsString);
+            }
+            charsBuilder.append(str);
+        }
+    }
+
+    void emit(char c) {
+        if (charsString == null) {
+            charsString = String.valueOf(c);
+        }
+        else {
+            if (charsBuilder.length() == 0) {
+                charsBuilder.append(charsString);
+            }
+            charsBuilder.append(c);
+        }
+    }
+
     void emit(char[] chars) {
         emit(String.valueOf(chars));
     }
 
-    void emit(char c) {
-        emit(String.valueOf(c));
+    void emit(int[] codepoints) {
+        emit(new String(codepoints, 0, codepoints.length));
     }
 
     TokeniserState getState() {
@@ -118,12 +150,9 @@ final class Tokeniser {
         this.state = state;
     }
 
-    void acknowledgeSelfClosingFlag() {
-        selfClosingFlagAcknowledged = true;
-    }
-
-    final private char[] charRefHolder = new char[1]; // holder to not have to keep creating arrays
-    char[] consumeCharacterReference(Character additionalAllowedCharacter, boolean inAttribute) {
+    final private int[] codepointHolder = new int[1]; // holder to not have to keep creating arrays
+    final private int[] multipointHolder = new int[2];
+    int[] consumeCharacterReference(Character additionalAllowedCharacter, boolean inAttribute) {
         if (reader.isEmpty())
             return null;
         if (additionalAllowedCharacter != null && additionalAllowedCharacter == reader.current())
@@ -131,7 +160,7 @@ final class Tokeniser {
         if (reader.matchesAnySorted(notCharRefCharsSorted))
             return null;
 
-        final char[] charRef = charRefHolder;
+        final int[] codeRef = codepointHolder;
         reader.mark();
         if (reader.matchConsume("#")) { // numbered
             boolean isHexMode = reader.matchConsumeIgnoreCase("X");
@@ -141,26 +170,31 @@ final class Tokeniser {
                 reader.rewindToMark();
                 return null;
             }
+
+            reader.unmark();
             if (!reader.matchConsume(";"))
                 characterReferenceError("missing semicolon"); // missing semi
             int charval = -1;
             try {
                 int base = isHexMode ? 16 : 10;
                 charval = Integer.valueOf(numRef, base);
-            } catch (NumberFormatException e) {
+            } catch (NumberFormatException ignored) {
             } // skip
             if (charval == -1 || (charval >= 0xD800 && charval <= 0xDFFF) || charval > 0x10FFFF) {
                 characterReferenceError("character outside of valid range");
-                charRef[0] = replacementChar;
-                return charRef;
+                codeRef[0] = replacementChar;
+                return codeRef;
             } else {
+                // fix illegal unicode characters to match browser behavior
+                if (charval >= win1252ExtensionsStart && charval < win1252ExtensionsStart + win1252Extensions.length) {
+                    characterReferenceError("character is not a valid unicode code point");
+                    charval = win1252Extensions[charval - win1252ExtensionsStart];
+                }
+
                 // todo: implement number replacement table
                 // todo: check for extra illegal unicode points as parse errors
-                if (charval < Character.MIN_SUPPLEMENTARY_CODE_POINT) {
-                    charRef[0] = (char) charval;
-                    return charRef;
-                } else
-                return Character.toChars(charval);
+                codeRef[0] = charval;
+                return codeRef;
             }
         } else { // named
             // get as many letters as possible, and look for matching entities.
@@ -172,7 +206,7 @@ final class Tokeniser {
             if (!found) {
                 reader.rewindToMark();
                 if (looksLegit) // named with semicolon
-                    characterReferenceError(String.format("invalid named referenece '%s'", nameRef));
+                    characterReferenceError("invalid named reference");
                 return null;
             }
             if (inAttribute && (reader.matchesLetter() || reader.matchesDigit() || reader.matchesAny('=', '-', '_'))) {
@@ -180,10 +214,20 @@ final class Tokeniser {
                 reader.rewindToMark();
                 return null;
             }
+
+            reader.unmark();
             if (!reader.matchConsume(";"))
                 characterReferenceError("missing semicolon"); // missing semi
-            charRef[0] = Entities.getCharacterByName(nameRef);
-            return charRef;
+            int numChars = Entities.codepointsForName(nameRef, multipointHolder);
+            if (numChars == 1) {
+                codeRef[0] = multipointHolder[0];
+                return codeRef;
+            } else if (numChars ==2) {
+                return multipointHolder;
+            } else {
+                Validate.fail("Unexpected characters returned for " + nameRef);
+                return multipointHolder;
+            }
         }
     }
 
@@ -205,6 +249,11 @@ final class Tokeniser {
         emit(commentPending);
     }
 
+    void createBogusCommentPending() {
+        commentPending.reset();
+        commentPending.bogus = true;
+    }
+
     void createDoctypePending() {
         doctypePending.reset();
     }
@@ -218,13 +267,11 @@ final class Tokeniser {
     }
 
     boolean isAppropriateEndTagToken() {
-        return lastStartTag != null && tagPending.tagName.equals(lastStartTag);
+        return lastStartTag != null && tagPending.name().equalsIgnoreCase(lastStartTag);
     }
 
     String appropriateEndTagName() {
-        if (lastStartTag == null)
-            return null;
-        return lastStartTag;
+        return lastStartTag; // could be null
     }
 
     void error(TokeniserState state) {
@@ -242,7 +289,7 @@ final class Tokeniser {
             errors.add(new ParseError(reader.pos(), "Invalid character reference: %s", message));
     }
 
-    private void error(String errorMsg) {
+    void error(String errorMsg) {
         if (errors.canAddError())
             errors.add(new ParseError(reader.pos(), errorMsg));
     }
@@ -256,22 +303,26 @@ final class Tokeniser {
 
     /**
      * Utility method to consume reader and unescape entities found within.
-     * @param inAttribute
+     * @param inAttribute if the text to be unescaped is in an attribute
      * @return unescaped string from reader
      */
     String unescapeEntities(boolean inAttribute) {
-        StringBuilder builder = new StringBuilder();
+        StringBuilder builder = StringUtil.borrowBuilder();
         while (!reader.isEmpty()) {
             builder.append(reader.consumeTo('&'));
             if (reader.matches('&')) {
                 reader.consume();
-                char[] c = consumeCharacterReference(null, inAttribute);
+                int[] c = consumeCharacterReference(null, inAttribute);
                 if (c == null || c.length==0)
                     builder.append('&');
-                else
-                    builder.append(c);
+                else {
+                    builder.appendCodePoint(c[0]);
+                    if (c.length == 2)
+                        builder.appendCodePoint(c[1]);
+                }
+
             }
         }
-        return builder.toString();
+        return StringUtil.releaseBuilder(builder);
     }
 }

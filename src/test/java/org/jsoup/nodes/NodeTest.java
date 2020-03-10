@@ -4,11 +4,12 @@ import org.jsoup.Jsoup;
 import org.jsoup.TextUtil;
 import org.jsoup.parser.Tag;
 import org.jsoup.select.NodeVisitor;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.List;
 
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.*;
+
 /**
  Tests Nodes
 
@@ -31,37 +32,37 @@ public class NodeTest {
 
         Element dodgyBase = new Element(tag, "wtf://no-such-protocol/", attribs);
         assertEquals("http://bar/qux", dodgyBase.absUrl("absHref")); // base fails, but href good, so get that
-        assertEquals("", dodgyBase.absUrl("relHref")); // base fails, only rel href, so return nothing 
+        assertEquals("", dodgyBase.absUrl("relHref")); // base fails, only rel href, so return nothing
     }
 
     @Test public void setBaseUriIsRecursive() {
         Document doc = Jsoup.parse("<div><p></p></div>");
-        String baseUri = "http://jsoup.org";
+        String baseUri = "https://jsoup.org";
         doc.setBaseUri(baseUri);
-        
+
         assertEquals(baseUri, doc.baseUri());
         assertEquals(baseUri, doc.select("div").first().baseUri());
         assertEquals(baseUri, doc.select("p").first().baseUri());
     }
 
     @Test public void handlesAbsPrefix() {
-        Document doc = Jsoup.parse("<a href=/foo>Hello</a>", "http://jsoup.org/");
+        Document doc = Jsoup.parse("<a href=/foo>Hello</a>", "https://jsoup.org/");
         Element a = doc.select("a").first();
         assertEquals("/foo", a.attr("href"));
-        assertEquals("http://jsoup.org/foo", a.attr("abs:href"));
+        assertEquals("https://jsoup.org/foo", a.attr("abs:href"));
         assertTrue(a.hasAttr("abs:href"));
     }
 
     @Test public void handlesAbsOnImage() {
-        Document doc = Jsoup.parse("<p><img src=\"/rez/osi_logo.png\" /></p>", "http://jsoup.org/");
+        Document doc = Jsoup.parse("<p><img src=\"/rez/osi_logo.png\" /></p>", "https://jsoup.org/");
         Element img = doc.select("img").first();
-        assertEquals("http://jsoup.org/rez/osi_logo.png", img.attr("abs:src"));
+        assertEquals("https://jsoup.org/rez/osi_logo.png", img.attr("abs:src"));
         assertEquals(img.absUrl("src"), img.attr("abs:src"));
     }
 
     @Test public void handlesAbsPrefixOnHasAttr() {
         // 1: no abs url; 2: has abs url
-        Document doc = Jsoup.parse("<a id=1 href='/foo'>One</a> <a id=2 href='http://jsoup.org/'>Two</a>");
+        Document doc = Jsoup.parse("<a id=1 href='/foo'>One</a> <a id=2 href='https://jsoup.org/'>Two</a>");
         Element one = doc.select("#1").first();
         Element two = doc.select("#2").first();
 
@@ -71,7 +72,7 @@ public class NodeTest {
 
         assertTrue(two.hasAttr("abs:href"));
         assertTrue(two.hasAttr("href"));
-        assertEquals("http://jsoup.org/", two.absUrl("href"));
+        assertEquals("https://jsoup.org/", two.absUrl("href"));
     }
 
     @Test public void literalAbsPrefix() {
@@ -116,13 +117,13 @@ public class NodeTest {
     Test for an issue with Java's abs URL handler.
      */
     @Test public void absHandlesRelativeQuery() {
-        Document doc = Jsoup.parse("<a href='?foo'>One</a> <a href='bar.html?foo'>Two</a>", "http://jsoup.org/path/file?bar");
+        Document doc = Jsoup.parse("<a href='?foo'>One</a> <a href='bar.html?foo'>Two</a>", "https://jsoup.org/path/file?bar");
 
         Element a1 = doc.select("a").first();
-        assertEquals("http://jsoup.org/path/file?foo", a1.absUrl("href"));
+        assertEquals("https://jsoup.org/path/file?foo", a1.absUrl("href"));
 
         Element a2 = doc.select("a").get(1);
-        assertEquals("http://jsoup.org/path/bar.html?foo", a2.absUrl("href"));
+        assertEquals("https://jsoup.org/path/bar.html?foo", a2.absUrl("href"));
     }
 
     @Test public void absHandlesDotFromIndex() {
@@ -130,31 +131,46 @@ public class NodeTest {
         Element a1 = doc.select("a").first();
         assertEquals("http://example.com/one/two.html", a1.absUrl("href"));
     }
-    
+
     @Test public void testRemove() {
         Document doc = Jsoup.parse("<p>One <span>two</span> three</p>");
         Element p = doc.select("p").first();
         p.childNode(0).remove();
-        
+
         assertEquals("two three", p.text());
         assertEquals("<span>two</span> three", TextUtil.stripNewlines(p.html()));
     }
-    
+
     @Test public void testReplace() {
         Document doc = Jsoup.parse("<p>One <span>two</span> three</p>");
         Element p = doc.select("p").first();
         Element insert = doc.createElement("em").text("foo");
         p.childNode(1).replaceWith(insert);
-        
+
         assertEquals("One <em>foo</em> three", p.html());
     }
-    
+
     @Test public void ownerDocument() {
         Document doc = Jsoup.parse("<p>Hello");
         Element p = doc.select("p").first();
-        assertTrue(p.ownerDocument() == doc);
-        assertTrue(doc.ownerDocument() == doc);
+        assertSame(p.ownerDocument(), doc);
+        assertSame(doc.ownerDocument(), doc);
         assertNull(doc.parent());
+    }
+
+    @Test public void root() {
+        Document doc = Jsoup.parse("<div><p>Hello");
+        Element p = doc.select("p").first();
+        Node root = p.root();
+        assertSame(doc, root);
+        assertNull(root.parent());
+        assertSame(doc.root(), doc);
+        assertSame(doc.root(), doc.ownerDocument());
+
+        Element standAlone = new Element(Tag.valueOf("p"), "");
+        assertNull(standAlone.parent());
+        assertSame(standAlone.root(), standAlone);
+        assertNull(standAlone.ownerDocument());
     }
 
     @Test public void before() {
@@ -199,19 +215,21 @@ public class NodeTest {
         Element span = doc.select("span").first();
         Node node = span.unwrap();
         assertEquals("<div>One  Two</div>", TextUtil.stripNewlines(doc.body().html()));
-        assertTrue(node == null);
+        assertNull(node);
     }
 
     @Test public void traverse() {
         Document doc = Jsoup.parse("<div><p>Hello</p></div><div>There</div>");
         final StringBuilder accum = new StringBuilder();
         doc.select("div").first().traverse(new NodeVisitor() {
+            @Override
             public void head(Node node, int depth) {
-                accum.append("<" + node.nodeName() + ">");
+                accum.append("<").append(node.nodeName()).append(">");
             }
 
+            @Override
             public void tail(Node node, int depth) {
-                accum.append("</" + node.nodeName() + ">");
+                accum.append("</").append(node.nodeName()).append(">");
             }
         });
         assertEquals("<div><p><#text></#text></p></div>", accum.toString());
@@ -265,13 +283,38 @@ public class NodeTest {
 
         Element elClone = doc.clone().select("div").first();
         assertTrue(elClone.hasClass("foo"));
-        assertTrue(elClone.text().equals("Text"));
+        assertEquals("Text", elClone.text());
 
         el.removeClass("foo");
         el.text("None");
         assertFalse(el.hasClass("foo"));
         assertTrue(elClone.hasClass("foo"));
-        assertTrue(el.text().equals("None"));
-        assertTrue(elClone.text().equals("Text"));
+        assertEquals("None", el.text());
+        assertEquals("Text", elClone.text());
+    }
+
+    @Test public void changingAttributeValueShouldReplaceExistingAttributeCaseInsensitive() {
+        Document document = Jsoup.parse("<INPUT id=\"foo\" NAME=\"foo\" VALUE=\"\">");
+        Element inputElement = document.select("#foo").first();
+
+        inputElement.attr("value","bar");
+
+        assertEquals(singletonAttributes(), getAttributesCaseInsensitive(inputElement));
+    }
+
+    private Attributes getAttributesCaseInsensitive(Element element) {
+        Attributes matches = new Attributes();
+        for (Attribute attribute : element.attributes()) {
+            if (attribute.getKey().equalsIgnoreCase("value")) {
+                matches.put(attribute);
+            }
+        }
+        return matches;
+    }
+
+    private Attributes singletonAttributes() {
+        Attributes attributes = new Attributes();
+        attributes.put("value", "bar");
+        return attributes;
     }
 }

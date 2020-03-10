@@ -1,30 +1,34 @@
 package org.jsoup.select;
 
+import org.jsoup.internal.StringUtil;
+import org.jsoup.helper.Validate;
+import org.jsoup.parser.TokenQueue;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import org.jsoup.helper.StringUtil;
-import org.jsoup.helper.Validate;
-import org.jsoup.parser.TokenQueue;
+import static org.jsoup.internal.Normalizer.normalize;
 
 /**
  * Parses a CSS selector into an Evaluator tree.
  */
-class QueryParser {
+public class QueryParser {
     private final static String[] combinators = {",", ">", "+", "~", " "};
     private static final String[] AttributeEvals = new String[]{"=", "!=", "^=", "$=", "*=", "~="};
 
     private TokenQueue tq;
     private String query;
-    private List<Evaluator> evals = new ArrayList<Evaluator>();
+    private List<Evaluator> evals = new ArrayList<>();
 
     /**
      * Create a new QueryParser.
      * @param query CSS query
      */
     private QueryParser(String query) {
+        Validate.notEmpty(query);
+        query = query.trim();
         this.query = query;
         this.tq = new TokenQueue(query);
     }
@@ -33,10 +37,15 @@ class QueryParser {
      * Parse a CSS query into an Evaluator.
      * @param query CSS query
      * @return Evaluator
+     * @see Selector selector query syntax
      */
     public static Evaluator parse(String query) {
-        QueryParser p = new QueryParser(query);
-        return p.parse();
+        try {
+            QueryParser p = new QueryParser(query);
+            return p.parse();
+        } catch (IllegalArgumentException e) {
+            throw new Selector.SelectorParseException(e.getMessage());
+        }
     }
 
     /**
@@ -125,7 +134,7 @@ class QueryParser {
     }
 
     private String consumeSubQuery() {
-        StringBuilder sq = new StringBuilder();
+        StringBuilder sq = StringUtil.borrowBuilder();
         while (!tq.isEmpty()) {
             if (tq.matches("("))
                 sq.append("(").append(tq.chompBalanced('(', ')')).append(")");
@@ -136,7 +145,7 @@ class QueryParser {
             else
                 sq.append(tq.consume());
         }
-        return sq.toString();
+        return StringUtil.releaseBuilder(sq);
     }
 
     private void findElements() {
@@ -144,7 +153,7 @@ class QueryParser {
             byId();
         else if (tq.matchChomp("."))
             byClass();
-        else if (tq.matchesWord())
+        else if (tq.matchesWord() || tq.matches("*|"))
             byTag();
         else if (tq.matches("["))
             byAttribute();
@@ -162,6 +171,8 @@ class QueryParser {
             contains(false);
         else if (tq.matches(":containsOwn("))
             contains(true);
+        else if (tq.matches(":containsData("))
+            containsData();
         else if (tq.matches(":matches("))
             matches(false);
         else if (tq.matches(":matchesOwn("))
@@ -192,6 +203,8 @@ class QueryParser {
         	evals.add(new Evaluator.IsEmpty());
         else if (tq.matchChomp(":root"))
         	evals.add(new Evaluator.IsRoot());
+        else if (tq.matchChomp(":matchText"))
+            evals.add(new Evaluator.MatchText());
 		else // unhandled
             throw new Selector.SelectorParseException("Could not parse query '%s': unexpected token at '%s'", query, tq.remainder());
 
@@ -206,18 +219,26 @@ class QueryParser {
     private void byClass() {
         String className = tq.consumeCssIdentifier();
         Validate.notEmpty(className);
-        evals.add(new Evaluator.Class(className.trim().toLowerCase()));
+        evals.add(new Evaluator.Class(className.trim()));
     }
 
     private void byTag() {
-        String tagName = tq.consumeElementSelector();
+        // todo - these aren't dealing perfectly with case sensitivity. For case sensitive parsers, we should also make
+        // the tag in the selector case-sensitive (and also attribute names). But for now, normalize (lower-case) for
+        // consistency - both the selector and the element tag
+        String tagName = normalize(tq.consumeElementSelector());
         Validate.notEmpty(tagName);
 
-        // namespaces: if element name is "abc:def", selector must be "abc|def", so flip:
-        if (tagName.contains("|"))
-            tagName = tagName.replace("|", ":");
+        // namespaces: wildcard match equals(tagName) or ending in ":"+tagName
+        if (tagName.startsWith("*|")) {
+            evals.add(new CombiningEvaluator.Or(new Evaluator.Tag(tagName), new Evaluator.TagEndsWith(tagName.replace("*|", ":"))));
+        } else {
+            // namespaces: if element name is "abc:def", selector must be "abc|def", so flip:
+            if (tagName.contains("|"))
+                tagName = tagName.replace("|", ":");
 
-        evals.add(new Evaluator.Tag(tagName.trim().toLowerCase()));
+            evals.add(new Evaluator.Tag(tagName));
+        }
     }
 
     private void byAttribute() {
@@ -272,11 +293,11 @@ class QueryParser {
     }
     
     //pseudo selectors :first-child, :last-child, :nth-child, ...
-    private static final Pattern NTH_AB = Pattern.compile("((\\+|-)?(\\d+)?)n(\\s*(\\+|-)?\\s*\\d+)?", Pattern.CASE_INSENSITIVE);
-    private static final Pattern NTH_B  = Pattern.compile("(\\+|-)?(\\d+)");
+    private static final Pattern NTH_AB = Pattern.compile("(([+-])?(\\d+)?)n(\\s*([+-])?\\s*\\d+)?", Pattern.CASE_INSENSITIVE);
+    private static final Pattern NTH_B  = Pattern.compile("([+-])?(\\d+)");
 
 	private void cssNthChild(boolean backwards, boolean ofType) {
-		String argS = tq.chompTo(")").trim().toLowerCase();
+		String argS = normalize(tq.chompTo(")"));
 		Matcher mAB = NTH_AB.matcher(argS);
 		Matcher mB = NTH_B.matcher(argS);
 		final int a, b;
@@ -331,6 +352,14 @@ class QueryParser {
             evals.add(new Evaluator.ContainsOwnText(searchText));
         else
             evals.add(new Evaluator.ContainsText(searchText));
+    }
+
+    // pseudo selector :containsData(data)
+    private void containsData() {
+        tq.consume(":containsData");
+        String searchText = TokenQueue.unescape(tq.chompBalanced('(', ')'));
+        Validate.notEmpty(searchText, ":containsData(text) query must not be empty");
+        evals.add(new Evaluator.ContainsData(searchText));
     }
 
     // :matches(regex), matchesOwn(regex)

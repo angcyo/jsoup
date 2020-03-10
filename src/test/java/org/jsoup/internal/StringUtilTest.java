@@ -1,20 +1,21 @@
-package org.jsoup.helper;
+package org.jsoup.internal;
 
 import org.jsoup.Jsoup;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;
+import java.util.Collections;
 
-import static org.jsoup.helper.StringUtil.*;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
+import static org.jsoup.internal.StringUtil.normaliseWhitespace;
+import static org.jsoup.internal.StringUtil.resolve;
+import static org.junit.jupiter.api.Assertions.*;
 
 public class StringUtilTest {
 
-    @Test public void join() {
-        assertEquals("", StringUtil.join(Arrays.asList(""), " "));
-        assertEquals("one", StringUtil.join(Arrays.asList("one"), " "));
+    @Test
+    public void join() {
+        assertEquals("", StringUtil.join(Collections.singletonList(""), " "));
+        assertEquals("one", StringUtil.join(Collections.singletonList("one"), " "));
         assertEquals("one two three", StringUtil.join(Arrays.asList("one", "two", "three"), " "));
     }
 
@@ -23,6 +24,15 @@ public class StringUtilTest {
         assertEquals(" ", StringUtil.padding(1));
         assertEquals("  ", StringUtil.padding(2));
         assertEquals("               ", StringUtil.padding(15));
+        assertEquals("                                             ", StringUtil.padding(45));
+    }
+
+    @Test public void paddingInACan() {
+        String[] padding = StringUtil.padding;
+        assertEquals(21, padding.length);
+        for (int i = 0; i < padding.length; i++) {
+            assertEquals(i, padding[i].length());
+        }
     }
 
     @Test public void isBlank() {
@@ -52,7 +62,7 @@ public class StringUtilTest {
         assertTrue(StringUtil.isWhitespace('\r'));
         assertTrue(StringUtil.isWhitespace('\f'));
         assertTrue(StringUtil.isWhitespace(' '));
-        
+
         assertFalse(StringUtil.isWhitespace('\u00a0'));
         assertFalse(StringUtil.isWhitespace('\u2000'));
         assertFalse(StringUtil.isWhitespace('\u3000'));

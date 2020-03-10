@@ -1,19 +1,25 @@
-package org.jsoup.helper;
+package org.jsoup.internal;
+
+import org.jsoup.helper.Validate;
 
 import java.net.MalformedURLException;
 import java.net.URL;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Iterator;
+import java.util.Stack;
 
 /**
  * A minimal String utility class. Designed for internal jsoup use only.
  */
 public final class StringUtil {
-    // memoised padding up to 10
-    private static final String[] padding = {"", " ", "  ", "   ", "    ", "     ", "      ", "       ", "        ", "         ", "          "};
+    // memoised padding up to 21
+    static final String[] padding = {"", " ", "  ", "   ", "    ", "     ", "      ", "       ", "        ",
+        "         ", "          ", "           ", "            ", "             ", "              ", "               ",
+        "                ", "                 ", "                  ", "                   ", "                    "};
 
     /**
-     * Join a collection of strings by a seperator
+     * Join a collection of strings by a separator
      * @param strings collection of string objects
      * @param sep string to place between strings
      * @return joined string
@@ -23,7 +29,7 @@ public final class StringUtil {
     }
 
     /**
-     * Join a collection of strings by a seperator
+     * Join a collection of strings by a separator
      * @param strings iterator of string objects
      * @param sep string to place between strings
      * @return joined string
@@ -36,12 +42,22 @@ public final class StringUtil {
         if (!strings.hasNext()) // only one, avoid builder
             return start;
 
-        StringBuilder sb = new StringBuilder(64).append(start);
+        StringBuilder sb = StringUtil.borrowBuilder().append(start);
         while (strings.hasNext()) {
             sb.append(sep);
             sb.append(strings.next());
         }
-        return sb.toString();
+        return StringUtil.releaseBuilder(sb);
+    }
+
+    /**
+     * Join an array of strings by a separator
+     * @param strings collection of string objects
+     * @param sep string to place between strings
+     * @return joined string
+     */
+    public static String join(String[] strings, String sep) {
+        return join(Arrays.asList(strings), sep);
     }
 
     /**
@@ -55,7 +71,6 @@ public final class StringUtil {
 
         if (width < padding.length)
             return padding[width];
-
         char[] out = new char[width];
         for (int i = 0; i < width; i++)
             out[i] = ' ';
@@ -63,7 +78,7 @@ public final class StringUtil {
     }
 
     /**
-     * Tests if a string is blank: null, emtpy, or only whitespace (" ", \r\n, \t, etc)
+     * Tests if a string is blank: null, empty, or only whitespace (" ", \r\n, \t, etc)
      * @param string string to test
      * @return if string is blank
      */
@@ -82,7 +97,7 @@ public final class StringUtil {
     /**
      * Tests if a string is numeric, i.e. contains only digit characters
      * @param string string to test
-     * @return true if only digit chars, false if empty or null or contains non-digit chrs
+     * @return true if only digit chars, false if empty or null or contains non-digit chars
      */
     public static boolean isNumeric(String string) {
         if (string == null || string.length() == 0)
@@ -97,12 +112,28 @@ public final class StringUtil {
     }
 
     /**
-     * Tests if a code point is "whitespace" as defined in the HTML spec.
+     * Tests if a code point is "whitespace" as defined in the HTML spec. Used for output HTML.
      * @param c code point to test
      * @return true if code point is whitespace, false otherwise
+     * @see #isActuallyWhitespace(int)
      */
     public static boolean isWhitespace(int c){
         return c == ' ' || c == '\t' || c == '\n' || c == '\f' || c == '\r';
+    }
+
+    /**
+     * Tests if a code point is "whitespace" as defined by what it looks like. Used for Element.text etc.
+     * @param c code point to test
+     * @return true if code point is whitespace, false otherwise
+     */
+    public static boolean isActuallyWhitespace(int c){
+        return c == ' ' || c == '\t' || c == '\n' || c == '\f' || c == '\r' || c == 160;
+        // 160 is &nbsp; (non-breaking space). Not in the spec but expected.
+    }
+
+    public static boolean isInvisibleChar(int c) {
+        return c == 8203 || c == 173; // zero width sp, soft hyphen
+        // previously also included zw non join, zw join - but removing those breaks semantic meaning of text
     }
 
     /**
@@ -112,9 +143,9 @@ public final class StringUtil {
      * @return normalised string
      */
     public static String normaliseWhitespace(String string) {
-        StringBuilder sb = new StringBuilder(string.length());
+        StringBuilder sb = StringUtil.borrowBuilder();
         appendNormalisedWhitespace(sb, string, false);
-        return sb.toString();
+        return StringUtil.releaseBuilder(sb);
     }
 
     /**
@@ -131,13 +162,13 @@ public final class StringUtil {
         int c;
         for (int i = 0; i < len; i+= Character.charCount(c)) {
             c = string.codePointAt(i);
-            if (isWhitespace(c)) {
+            if (isActuallyWhitespace(c)) {
                 if ((stripLeading && !reachedNonWhite) || lastWasWhite)
                     continue;
                 accum.append(' ');
                 lastWasWhite = true;
             }
-            else {
+            else if (!isInvisibleChar(c)) {
                 accum.appendCodePoint(c);
                 lastWasWhite = false;
                 reachedNonWhite = true;
@@ -145,17 +176,22 @@ public final class StringUtil {
         }
     }
 
-    public static boolean in(String needle, String... haystack) {
-        for (String hay : haystack) {
-            if (hay.equals(needle))
+    public static boolean in(final String needle, final String... haystack) {
+        final int len = haystack.length;
+        for (int i = 0; i < len; i++) {
+            if (haystack[i].equals(needle))
             return true;
         }
         return false;
     }
 
+    public static boolean inSorted(String needle, String[] haystack) {
+        return Arrays.binarySearch(haystack, needle) >= 0;
+    }
+
     /**
      * Create a new absolute URL, from a provided existing absolute URL and a relative URL component.
-     * @param base the existing absolulte base URL
+     * @param base the existing absolute base URL
      * @param relUrl the relative URL to resolve. (If it's already absolute, it will be returned)
      * @return the resolved absolute URL
      * @throws MalformedURLException if an error occurred generating the URL
@@ -191,6 +227,50 @@ public final class StringUtil {
         } catch (MalformedURLException e) {
             return "";
         }
-
     }
+
+    private static final Stack<StringBuilder> builders = new Stack<>();
+
+    /**
+     * Maintains cached StringBuilders in a flyweight pattern, to minimize new StringBuilder GCs. The StringBuilder is
+     * prevented from growing too large.
+     * <p>
+     * Care must be taken to release the builder once its work has been completed, with {@link #releaseBuilder}
+     * @return an empty StringBuilder
+     */
+    public static StringBuilder borrowBuilder() {
+        synchronized (builders) {
+            return builders.empty() ?
+                new StringBuilder(MaxCachedBuilderSize) :
+                builders.pop();
+        }
+    }
+
+    /**
+     * Release a borrowed builder. Care must be taken not to use the builder after it has been returned, as its
+     * contents may be changed by this method, or by a concurrent thread.
+     * @param sb the StringBuilder to release.
+     * @return the string value of the released String Builder (as an incentive to release it!).
+     */
+    public static String releaseBuilder(StringBuilder sb) {
+        Validate.notNull(sb);
+        String string = sb.toString();
+
+        if (sb.length() > MaxCachedBuilderSize)
+            sb = new StringBuilder(MaxCachedBuilderSize); // make sure it hasn't grown too big
+        else
+            sb.delete(0, sb.length()); // make sure it's emptied on release
+
+        synchronized (builders) {
+            builders.push(sb);
+
+            while (builders.size() > MaxIdleBuilders) {
+                builders.pop();
+            }
+        }
+        return string;
+    }
+
+    private static final int MaxCachedBuilderSize = 8 * 1024;
+    private static final int MaxIdleBuilders = 8;
 }

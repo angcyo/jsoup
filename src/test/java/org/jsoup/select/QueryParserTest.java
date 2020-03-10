@@ -1,7 +1,8 @@
 package org.jsoup.select;
 
-import org.junit.Test;
-import static org.junit.Assert.*;
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * Tests for the Selector Query Parser.
@@ -38,5 +39,27 @@ public class QueryParserTest {
         assertEquals(2, andLeft.evaluators.size());
         assertEquals("li :prevli :ImmediateParentol", andRight.toString());
         assertEquals(2, andLeft.evaluators.size());
+    }
+
+    @Test public void exceptionOnUncloseAttribute() {
+        assertThrows(Selector.SelectorParseException.class, () -> QueryParser.parse("section > a[href=\"]"));
+    }
+
+    @Test public void testParsesSingleQuoteInContains() {
+        assertThrows(Selector.SelectorParseException.class, () -> QueryParser.parse("p:contains(One \" One)"));
+    }
+
+
+    @Test public void exceptOnEmptySelector() {
+        assertThrows(Selector.SelectorParseException.class, () -> QueryParser.parse(""));
+    }
+
+    @Test public void exceptOnNullSelector() {
+        assertThrows(Selector.SelectorParseException.class, () -> QueryParser.parse(null));
+    }
+
+    @Test public void okOnSpacesForeAndAft() {
+        Evaluator parse = QueryParser.parse(" span div  ");
+        assertEquals("div :parentspan", parse.toString()); // TODO - don't really love that toString() result...
     }
 }
